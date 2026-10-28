@@ -21,6 +21,7 @@ from datetime import datetime
 
 import tkinter as tk
 from tkinter import filedialog
+from tkinter import font as tkfont
 
 # ---------- 경로 ----------
 # PyInstaller exe 로 묶이면 __file__ 은 임시폴더를 가리키므로 exe 위치를 쓴다.
@@ -116,6 +117,41 @@ def is_window(hwnd):
     return bool(user32.IsWindow(hwnd))
 
 
+# 한글 조합 중인 글자는 IME 가 따로 그리는데, Tk 는 글꼴을 넘기지 않아 시스템 기본 글꼴로 보인다.
+# 조합창에 입력칸과 같은 글꼴을 지정해 입력 중/입력 완료 글자가 같게 보이도록 한다.
+imm32 = ctypes.windll.imm32
+imm32.ImmGetContext.restype = wintypes.HANDLE
+imm32.ImmGetContext.argtypes = [wintypes.HWND]
+imm32.ImmReleaseContext.argtypes = [wintypes.HWND, wintypes.HANDLE]
+imm32.ImmSetCompositionFontW.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+
+
+class LOGFONTW(ctypes.Structure):
+    _fields_ = [('lfHeight', ctypes.c_long), ('lfWidth', ctypes.c_long),
+                ('lfEscapement', ctypes.c_long), ('lfOrientation', ctypes.c_long),
+                ('lfWeight', ctypes.c_long), ('lfItalic', ctypes.c_byte),
+                ('lfUnderline', ctypes.c_byte), ('lfStrikeOut', ctypes.c_byte),
+                ('lfCharSet', ctypes.c_byte), ('lfOutPrecision', ctypes.c_byte),
+                ('lfClipPrecision', ctypes.c_byte), ('lfQuality', ctypes.c_byte),
+                ('lfPitchAndFamily', ctypes.c_byte), ('lfFaceName', ctypes.c_wchar * 32)]
+
+
+def set_ime_font(hwnd, face, height_px):
+    # height_px: 글자 높이(px). LOGFONT 는 음수면 행간 제외 글자 높이로 해석한다.
+    lf = LOGFONTW()
+    lf.lfHeight = -abs(int(height_px))
+    lf.lfWeight = 400
+    lf.lfCharSet = 1  # DEFAULT_CHARSET
+    lf.lfFaceName = face[:31]
+    himc = imm32.ImmGetContext(hwnd)
+    if not himc:
+        return
+    try:
+        imm32.ImmSetCompositionFontW(himc, ctypes.byref(lf))
+    finally:
+        imm32.ImmReleaseContext(hwnd, himc)
+
+
 def start_drag(hwnd):
     # 테두리 없는 창을 마우스로 끌어 옮기기 (제목표시줄을 잡은 것처럼)
     user32.ReleaseCapture()
@@ -150,10 +186,10 @@ DEFAULTS = {
     'targetTitle': 'IPlus Chart',
     'model': 'sonnet',
     'claudeExe': '',
-    'inputFont': '맑은 고딕',
-    'inputFontSize': 10,
-    'outputFont': '맑은 고딕',
-    'outputFontSize': 10,
+    'inputFont': 'NanumGothic',
+    'inputFontSize': 9,
+    'outputFont': 'NanumGothic',
+    'outputFontSize': 9,
     # IPlus 클라이언트 영역 기준 좌표 (보정 모드로 맞춘 값이 저장됨)
     'input': {'x': 778, 'y': 116, 'w': 268, 'h': 140},
     'output': {'x': 1136, 'y': 326, 'w': 192, 'h': 134},
@@ -307,7 +343,7 @@ class App:
         # 이벤트
         self.in_text.bind('<Key>', self._on_in_key)
         self.in_text.bind('<KeyRelease>', lambda e: self._update_input_look())
-        self.in_text.bind('<FocusIn>', lambda e: self._update_input_look())
+        self.in_text.bind('<FocusIn>', self._on_in_focus)
         self.in_text.bind('<FocusOut>', lambda e: self._update_input_look())
         self.in_text.bind('<Button-1>', self._on_in_mousedown)
         self.out_text_w.bind('<Key>', self._on_out_key)
@@ -323,6 +359,24 @@ class App:
         return user32.GetParent(win.winfo_id()) or win.winfo_id()
 
     # ---------- 입력칸 모습 ----------
+    def _on_in_focus(self, e=None):
+        self._apply_ime_font()
+        self._update_input_look()
+
+    def _apply_ime_font(self):
+        # Tk 가 실제로 고른 글꼴/크기를 그대로 IME 조합창에 지정 (글꼴이 없어 대체돼도 둘이 같게)
+        try:
+            f = tkfont.Font(font=self.in_text.cget('font'))
+            face = f.actual('family')
+            size = f.actual('size')
+            if size > 0:  # pt -> px
+                px = round(size * float(self.root.tk.call('tk', 'scaling')))
+            else:         # 음수면 이미 px
+                px = -size
+            set_ime_font(self.in_text.winfo_id(), face, px)
+        except Exception as ex:
+            log('ime font: %s' % ex)
+
     def _update_input_look(self):
         # 글자가 있으면 불투명, 비어 있고 커서가 있으면 반투명, 비어 있고 커서 없으면 투명+클릭 통과
         if self.calibrating:
