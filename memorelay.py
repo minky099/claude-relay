@@ -60,6 +60,7 @@ WS_EX_LAYERED = 0x80000
 WS_EX_TRANSPARENT = 0x20
 WS_EX_TOOLWINDOW = 0x80
 WS_EX_NOACTIVATE = 0x08000000
+LWA_COLORKEY = 0x1
 LWA_ALPHA = 0x2
 GW_CHILD = 5
 WM_NCLBUTTONDOWN = 0xA1
@@ -95,12 +96,17 @@ def set_click_through(hwnd, on):
         set_exstyle(hwnd, nx)
 
 
-def set_alpha(hwnd, opacity):
+def set_alpha(hwnd, opacity, colorkey=None):
     # opacity 0.0~1.0. 0 이면 완전히 투명(아래가 그대로 보임)
+    # colorkey '#RRGGBB' 를 주면 그 색으로 칠해진 픽셀만 완전히 투명(클릭도 통과)
     ex = get_exstyle(hwnd)
     if not (ex & WS_EX_LAYERED):
         set_exstyle(hwnd, ex | WS_EX_LAYERED)
-    user32.SetLayeredWindowAttributes(hwnd, 0, int(round(opacity * 255)), LWA_ALPHA)
+    flags, cref = LWA_ALPHA, 0
+    if colorkey:
+        r, g, b = int(colorkey[1:3], 16), int(colorkey[3:5], 16), int(colorkey[5:7], 16)
+        flags, cref = LWA_ALPHA | LWA_COLORKEY, r | (g << 8) | (b << 16)
+    user32.SetLayeredWindowAttributes(hwnd, cref, int(round(opacity * 255)), flags)
 
 
 def client_origin(hwnd):
@@ -193,7 +199,6 @@ DEFAULTS = {
     # IPlus 클라이언트 영역 기준 좌표 (보정 모드로 맞춘 값이 저장됨)
     'input': {'x': 778, 'y': 116, 'w': 268, 'h': 140},
     'output': {'x': 1136, 'y': 326, 'w': 192, 'h': 134},
-    'focusOpacity': 0.5,   # 입력칸이 비어 있고 커서가 들어가 있을 때 (아래가 비쳐 보임)
     'calibOpacity': 0.55,
     'hotkeyFocus': 'Ctrl+Alt+A',
     'hotkeyToggle': 'Ctrl+Alt+Z',
@@ -287,6 +292,10 @@ def format_plain(t, keep_numbers):
     return '\n'.join(res).strip()
 
 
+# 입력칸 배경색. 이 색은 투명 처리되고, 입력한 글자 칸에만 흰 배경을 깔아 아래 글자를 가린다.
+INPUT_KEY = '#FF00FE'
+
+
 class App:
     def __init__(self):
         self.cfg = read_config()
@@ -324,15 +333,17 @@ class App:
 
         self.in_win = tk.Toplevel(self.root)
         self.out_win = tk.Toplevel(self.root)
-        for w, title in ((self.in_win, '입력칸'), (self.out_win, '응답칸')):
+        for w, title, bg in ((self.in_win, '입력칸', INPUT_KEY), (self.out_win, '응답칸', 'white')):
             w.overrideredirect(True)      # 테두리/제목 없음
             w.title(title)
-            w.configure(bg='white')
+            w.configure(bg=bg)
             w.attributes('-topmost', False)
 
         self.in_text = tk.Text(self.in_win, wrap='word', bd=0, highlightthickness=0,
-                               bg='white', fg='black', undo=True,
+                               bg=INPUT_KEY, fg='black', undo=True,
                                font=(self.cfg['inputFont'], self.cfg['inputFontSize']))
+        self.in_text.tag_configure('typed', background='white')
+        self.in_text.tag_lower('typed')  # 선택 영역(sel) 색이 가려지지 않게
         self.in_text.pack(fill='both', expand=True)
 
         self.out_text_w = tk.Text(self.out_win, wrap='word', bd=0, highlightthickness=0,
@@ -351,6 +362,7 @@ class App:
         # 이벤트
         self.in_text.bind('<Key>', self._on_in_key)
         self.in_text.bind('<KeyRelease>', lambda e: self._update_input_look())
+        self.in_text.bind('<<Modified>>', self._on_in_modified)
         self.in_text.bind('<FocusIn>', self._on_in_focus)
         self.in_text.bind('<FocusOut>', lambda e: self._update_input_look())
         self.in_text.bind('<Button-1>', self._on_in_mousedown)
@@ -385,20 +397,35 @@ class App:
         except Exception as ex:
             log('ime font: %s' % ex)
 
+    def _on_in_modified(self, e=None):
+        # 글자가 들어가는 즉시(그려지기 전에) 배경을 칠해 깜박임이 없게
+        if self.in_text.edit_modified():
+            self.in_text.edit_modified(False)
+            self._update_input_look()
+
+    def _paint_typed(self):
+        # 입력한 글자 칸만 흰 배경 -> insert(겹쳐쓰기)처럼 아래 글자가 한 칸씩 가려짐
+        # 줄바꿈 문자는 빼야 줄 끝까지 흰색이 늘어나지 않는다
+        t = self.in_text
+        t.tag_remove('typed', '1.0', 'end')
+        t.tag_add('typed', '1.0', 'end-1c')
+        idx = '1.0'
+        while True:
+            idx = t.search('\n', idx, stopindex='end-1c')
+            if not idx:
+                break
+            t.tag_remove('typed', idx)
+            idx = t.index(idx + '+1c')
+
     def _update_input_look(self):
-        # 글자가 있으면 불투명, 비어 있고 커서가 있으면 반투명, 비어 있고 커서 없으면 투명+클릭 통과
+        # 배경은 항상 투명(컬러키), 입력한 글자 칸만 불투명. 비어 있고 커서도 없으면 클릭 통과
         if self.calibrating:
             return
-        has_text = bool(self.in_text.get('1.0', 'end-1c').strip())
+        self._paint_typed()
+        has_text = bool(self.in_text.get('1.0', 'end-1c'))
         focused = (self.root.focus_get() == self.in_text)
-        if has_text:
-            op, through = 1.0, False
-        elif focused:
-            op, through = float(self.cfg['focusOpacity']), False
-        else:
-            op, through = 0.0, True
-        set_alpha(self.in_hwnd, op)
-        set_click_through(self.in_hwnd, through)
+        set_alpha(self.in_hwnd, 1.0, INPUT_KEY)
+        set_click_through(self.in_hwnd, not (has_text or focused))
 
     def show_output(self, t):
         self.out_text = t
@@ -806,12 +833,14 @@ class App:
             else:
                 b = self.calib_backup[key]
                 r.update(b)
-            win.configure(bg='white')
-            box.configure(bg='white')
+            bg = INPUT_KEY if win is self.in_win else 'white'
+            win.configure(bg=bg)
+            box.configure(bg=bg)
             win.attributes('-topmost', False)
-            set_alpha(self._hwnd(win), 1.0)
+            set_alpha(self._hwnd(win), 1.0, INPUT_KEY if win is self.in_win else None)
         self.out_text_w.configure(state='disabled')
         self.calibrating = False
+        self._update_input_look()
         self.owner_dirty = True
         if save:
             save_config(self.cfg)
