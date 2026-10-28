@@ -1,0 +1,28 @@
+{
+  "targetTitle": "IPlus Chart",
+  "model": "opus",
+  "claudeExe": "",
+  "inputFont": "NanumGothic",
+  "inputFontSize": 9,
+  "outputFont": "NanumGothic",
+  "outputFontSize": 9,
+  "input": {
+    "x": 779,
+    "y": 119,
+    "w": 270,
+    "h": 140
+  },
+  "output": {
+    "x": 1136,
+    "y": 331,
+    "w": 182,
+    "h": 129
+  },
+  "focusOpacity": 0.5,
+  "calibOpacity": 0.55,
+  "hotkeyFocus": "Ctrl+Alt+A",
+  "hotkeyToggle": "Ctrl+Alt+Z",
+  "hotkeyCalibrate": "Ctrl+Alt+F12",
+  "saveHistory": true,
+  "keepNumbers": true
+}
