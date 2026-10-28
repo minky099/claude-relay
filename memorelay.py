@@ -6,8 +6,8 @@ IPlus Chart 화면의 기존 칸(기본 탭 증상칸, 명세서메모) 위에 �
 입력칸에 쓴 질문을 claude -p 로 보내 응답을 응답칸에 표시한다.
 입력칸은 비어 있으면 완전히 투명하고 클릭이 통과해 아래 IPlus 증상칸을 그대로 쓸 수 있다.
 
-실행: pythonw memorelay.py (또는 Start-MemoRelay.cmd). 설정: memo-relay.json, 말투: system-prompt.txt
-PowerShell 판(MemoRelay.ps1)과 같은 동작.
+실행: pythonw memorelay.py (또는 Start-MemoRelay-py.cmd). 설정: memo-relay.json, 말투: system-prompt.txt
+처음 한 번 입력칸에 /login 으로 Claude CLI 로그인.
 """
 import os
 import sys
@@ -240,6 +240,12 @@ def resolve_claude_exe(cfg, state):
     return None
 
 
+def clean_env():
+    # API 키나 다른 Claude 세션의 인증 변수를 물려받지 않도록 제거 -> 항상 CLI 로그인(구독)으로
+    return {k: v for k, v in os.environ.items()
+            if not (k.upper().startswith('CLAUDE') or k.upper().startswith('ANTHROPIC'))}
+
+
 MD_FENCE = re.compile(r'^\s*```')
 MD_TABLE_SEP = re.compile(r'^[\s|:\-]+$')
 MD_HEAD = re.compile(r'^\s*#{1,6}\s+')
@@ -298,6 +304,8 @@ class App:
         self.hist_file = None
         self.proc = None
         self.result_holder = {}   # {'out':..., 'err':...} 백그라운드 스레드가 채움
+        self.login_running = False
+        self.login_result = None  # /login 이 끝나면 auth status 출력이 들어옴
         self.cancelled = False
         self.pending = None       # (question, files, model)
         self.out_text = ''
@@ -474,9 +482,7 @@ class App:
         if self.session_id:
             argv += ['--resume', self.session_id]
 
-        # API 키나 다른 Claude 세션의 인증 변수를 물려받지 않도록 제거 -> 항상 CLI 로그인(구독)으로
-        env = {k: v for k, v in os.environ.items()
-               if not (k.upper().startswith('CLAUDE') or k.upper().startswith('ANTHROPIC'))}
+        env = clean_env()
 
         self.pending = (text, files, self.cfg['model'])
         self.cancelled = False
@@ -524,12 +530,15 @@ class App:
                 j = None
         if not j:
             log('bad output code=%s out=%s err=%s' % (r.get('code'), out, err))
-            self.show_output('오류: 응답을 읽지 못함\n' + ('%s\n%s' % (err, out)).strip())
+            msg = ('%s\n%s' % (err, out)).strip()
+            if re.search(r'Not logged in|/login', msg):
+                msg += '\n\n입력칸에 /login 으로 로그인'
+            self.show_output('오류: 응답을 읽지 못함\n' + msg)
             return
         if j.get('is_error'):
             msg = str(j.get('result', ''))
             if re.search(r'Not logged in|/login', msg):
-                msg += '\n\nCLI 로그인 필요 (README 참고)'
+                msg += '\n\n입력칸에 /login 으로 로그인'
             self.show_output('오류: ' + msg)
             return
         if j.get('session_id'):
@@ -538,6 +547,40 @@ class App:
         self.show_output(text)
         q, files, model = self.pending
         self.save_history(q, files, text, model)
+
+    # ---------- CLI 로그인 ----------
+    def start_login(self):
+        # claude auth login 을 새 콘솔 창에서 실행 (브라우저가 열리고, 필요하면 코드 붙여넣기)
+        if self.login_running:
+            return
+        exe = resolve_claude_exe(self.cfg, self.state)
+        if not exe:
+            self.show_output('오류: claude.exe 를 찾지 못함')
+            return
+        env = clean_env()
+        self.login_running = True
+        self.login_result = None
+
+        def worker():
+            try:
+                subprocess.call([exe, 'auth', 'login'], cwd=WORK_DIR, env=env,
+                                creationflags=0x00000010)  # CREATE_NEW_CONSOLE
+                r = subprocess.run([exe, 'auth', 'status'], cwd=WORK_DIR, env=env,
+                                   capture_output=True, creationflags=0x08000000, timeout=30)
+                out = (r.stdout + r.stderr).decode('utf-8', 'replace').strip()
+            except Exception as e:
+                out = '오류: %s' % e
+            self.login_result = out or '(상태 출력 없음)'
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.show_output('로그인 창에서 진행')
+
+    def complete_login(self):
+        out = self.login_result
+        self.login_result = None
+        self.login_running = False
+        log('login: %s' % out.replace('\n', ' '))
+        self.show_output('로그인 상태\n' + out)
 
     def save_history(self, q, files, a, model):
         if not self.cfg['saveHistory']:
@@ -624,7 +667,7 @@ class App:
     # ---------- 입력 처리 ----------
     def invoke_input(self):
         t = self.in_text.get('1.0', 'end-1c').strip()
-        m = re.match(r'^/(new|opus|sonnet|haiku|model|file|quit)(?:\s+(\S+))?$', t)
+        m = re.match(r'^/(new|opus|sonnet|haiku|model|file|login|quit)(?:\s+(\S+))?$', t)
         if m:
             cmd, arg = m.group(1), m.group(2)
             self._clear_input()
@@ -643,6 +686,8 @@ class App:
                 self.show_output('모델: ' + self.cfg['model'])
             elif cmd == 'file':
                 self.select_files()
+            elif cmd == 'login':
+                self.start_login()
             elif cmd == 'quit':
                 self.quit()
             return
@@ -848,6 +893,8 @@ class App:
         try:
             if self.result_holder and self.proc is None:
                 self.complete_ask()
+            if self.login_result is not None:
+                self.complete_login()
             self._sync_overlay()
         except Exception as e:
             log('tick: %s' % e)

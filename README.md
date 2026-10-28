@@ -11,7 +11,7 @@ IPlus Chart 위에 겹쳐 뜨는 위장 입력/응답 칸. 질문을 `claude -p`
 - 종료는 입력칸에 `/quit`.
 
 ## 처음 한 번: CLI 로그인
-`powershell -ExecutionPolicy Bypass -File .\Login-Claude.ps1` 실행 → 브라우저에서 Claude 구독 계정으로 로그인.
+입력칸에 `/login` → 콘솔 창이 뜨고 브라우저에서 Claude 구독 계정으로 로그인. 끝나면 응답칸에 로그인 상태 표시.
 
 ## 조작
 | 키 / 명령 | 동작 |
@@ -24,6 +24,7 @@ IPlus Chart 위에 겹쳐 뜨는 위장 입력/응답 칸. 질문을 `claude -p`
 | 파일 첨부 | Ctrl+V(복사한 파일/캡처 이미지) 또는 Ctrl+O / `/file` (드래그앤드롭은 없음) |
 | 마우스 휠 | 응답칸 스크롤 |
 | `/new` | 새 대화 |
+| `/login` | Claude CLI 로그인 (구독 계정) |
 | `/opus` `/sonnet` `/haiku`, `/model <id>` | 모델 변경 (`/model` 만 치면 현재 모델) |
 | Ctrl+Alt+Z | 두 칸 즉시 숨기기/보이기 |
 | Ctrl+Alt+F12 | 보정 모드 시작/저장 (아래) |
@@ -40,7 +41,7 @@ Ctrl+Alt+F12 → 입력칸은 노란색, 응답칸은 분홍색 반투명으로 
 - `history\` 대화 기록 (평문, 대화별 .md)
 - `work\` claude 작업 폴더, 붙여넣은 이미지 저장
 - `memo-relay.log` 오류 로그
-- `memorelay.py` 본체, `Login-Claude.ps1` CLI 로그인 helper
+- `memorelay.py` 본체
 
 ## exe 로 묶기 (선택)
 PowerShell(일반) 에서:
