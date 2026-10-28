@@ -11,7 +11,7 @@ IPlus Chart 위에 겹쳐 뜨는 위장 입력/응답 칸. 질문을 `claude -p`
 - 종료는 입력칸에 `/quit`.
 
 ## 처음 한 번: CLI 로그인
-`powershell -ExecutionPolicy Bypass -File .\Login-Claude.ps1` 실행 → 브라우저에서 Claude 구독 계정으로 로그인 (2026-10-28 완료, Max).
+`powershell -ExecutionPolicy Bypass -File .\Login-Claude.ps1` 실행 → 브라우저에서 Claude 구독 계정으로 로그인.
 
 ## 조작
 | 키 / 명령 | 동작 |
@@ -45,7 +45,7 @@ Ctrl+Alt+F12 → 입력칸은 노란색, 응답칸은 분홍색 반투명으로 
 ## exe 로 묶기 (선택)
 PowerShell(일반) 에서:
 
-    cd "C:\Users\진료실1-2\Documents\mk\claude\MemoRelay"
+    cd <MemoRelay 폴더>
     pyinstaller --noconsole --onefile --name MemoRelay memorelay.py
 
 dist\MemoRelay.exe 가 생긴다. exe 는 자기가 놓인 폴더를 기준으로 설정/기록(memo-relay.json, system-prompt.txt, history\)을 찾으니, exe 를 이 폴더에 두거나 그 파일들을 exe 옆에 같이 둔다.

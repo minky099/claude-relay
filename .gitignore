@@ -1,0 +1,12 @@
+# 런타임 산출물 (개인 기록/로그)
+history/
+work/
+memo-relay.log
+install-python.log
+
+# Python / PyInstaller
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
