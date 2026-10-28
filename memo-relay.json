@@ -23,9 +23,11 @@
     "h": 129
   },
   "calibOpacity": 0.55,
+  "outputOpacity": 1.0,
   "hotkeyFocus": "Ctrl+Alt+A",
   "hotkeyToggle": "Ctrl+Alt+Z",
   "hotkeyCalibrate": "Ctrl+Alt+F12",
+  "hotkeyOutput": "Ctrl+Alt+X",
   "saveHistory": true,
   "keepNumbers": true
 }

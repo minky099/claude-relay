@@ -41,6 +41,9 @@ OpenAI Codex CLI 를 ChatGPT 구독 계정으로 로그인해서 쓴다 (API 키
 | `/login` | 지금 쓰는 쪽 CLI 로그인 (구독 계정) |
 | `/opus` `/sonnet` `/haiku`, `/model <id>` | 모델 변경 (`/opus` 등은 Claude 로 전환, `/model` 은 지금 쓰는 쪽, `/model` 만 치면 현재 모델) |
 | Ctrl+Alt+Z | 두 칸 즉시 숨기기/보이기 |
+| Ctrl+Alt+X | 응답칸만 숨기기/보이기 (내용 유지, 새 응답이 오면 다시 보임) |
+| 응답칸 위에서 Ctrl+휠 | 응답칸 투명도 10% 씩 조절 (10~100%, 저장됨) |
+| `/opacity 60` | 응답칸 불투명도 60% (`/opacity` 만 치면 현재 값) |
 | Ctrl+Alt+F12 | 보정 모드 시작/저장 (아래) |
 
 ## 보정 모드 (칸 위치 미세조정)

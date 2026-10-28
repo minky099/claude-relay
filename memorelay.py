@@ -204,9 +204,11 @@ DEFAULTS = {
     'input': {'x': 778, 'y': 116, 'w': 268, 'h': 140},
     'output': {'x': 1136, 'y': 326, 'w': 192, 'h': 134},
     'calibOpacity': 0.55,
+    'outputOpacity': 1.0,   # 응답칸 불투명도 0.1~1.0 (응답칸 위에서 Ctrl+휠, /opacity)
     'hotkeyFocus': 'Ctrl+Alt+A',
     'hotkeyToggle': 'Ctrl+Alt+Z',
     'hotkeyCalibrate': 'Ctrl+Alt+F12',
+    'hotkeyOutput': 'Ctrl+Alt+X',  # 응답칸만 숨기기/보이기
     'saveHistory': True,
     'keepNumbers': True,
 }
@@ -368,6 +370,7 @@ class App:
         self.owner = None
         self.owner_dirty = False
         self.hidden = False
+        self.out_off = False      # 응답칸만 꺼 둔 상태 (새 응답이 오면 다시 켜짐)
         self.calibrating = False
         self.calib_backup = None
         self.files = []
@@ -420,6 +423,7 @@ class App:
         for h in (self.in_hwnd, self.out_hwnd):
             ex = get_exstyle(h) | WS_EX_TOOLWINDOW | WS_EX_LAYERED
             set_exstyle(h, ex)
+        set_alpha(self.out_hwnd, self._output_opacity())
 
         # 이벤트
         self.in_text.bind('<Key>', self._on_in_key)
@@ -491,6 +495,8 @@ class App:
 
     def show_output(self, t):
         self.out_text = t
+        if t:
+            self.out_off = False
         self.out_text_w.configure(state='normal')
         self.out_text_w.delete('1.0', 'end')
         self.out_text_w.insert('1.0', t)
@@ -523,11 +529,30 @@ class App:
         if self.in_win.state() == 'withdrawn':
             self.in_win.deiconify()
         self._update_input_look()
-        if self.out_text:
+        if self.out_text and not self.out_off:
             if self.out_win.state() == 'withdrawn':
                 self.out_win.deiconify()
         elif self.out_win.state() != 'withdrawn':
             self.out_win.withdraw()
+
+    def toggle_output(self):
+        # 응답칸만 켜고 끄기 (내용은 그대로 둠)
+        if self.calibrating or not self.out_text:
+            return
+        self.out_off = not self.out_off
+        self._sync_overlay()
+
+    def _output_opacity(self):
+        try:
+            return min(1.0, max(0.1, float(self.cfg['outputOpacity'])))
+        except Exception:
+            return 1.0
+
+    def set_output_opacity(self, v):
+        self.cfg['outputOpacity'] = round(min(1.0, max(0.1, v)), 2)
+        save_config(self.cfg)
+        if not self.calibrating:
+            set_alpha(self.out_hwnd, self.cfg['outputOpacity'])
 
     def switch_hidden(self):
         if self.calibrating:
@@ -829,7 +854,7 @@ class App:
     # ---------- 입력 처리 ----------
     def invoke_input(self):
         t = self.in_text.get('1.0', 'end-1c').strip()
-        m = re.match(r'^/(new|claude|gpt|opus|sonnet|haiku|model|file|login|quit)(?:\s+(\S+))?$', t)
+        m = re.match(r'^/(new|claude|gpt|opus|sonnet|haiku|model|file|login|opacity|quit)(?:\s+(\S+))?$', t)
         if m:
             cmd, arg = m.group(1), m.group(2)
             self._clear_input()
@@ -855,6 +880,11 @@ class App:
                 self.select_files()
             elif cmd == 'login':
                 self.start_login()
+            elif cmd == 'opacity':
+                # /opacity 60 -> 응답칸 불투명도 60%
+                if arg and arg.rstrip('%').isdigit():
+                    self.set_output_opacity(int(arg.rstrip('%')) / 100.0)
+                self.show_output('응답칸 불투명도 %d%%' % round(self._output_opacity() * 100))
             elif cmd == 'quit':
                 self.quit()
             return
@@ -921,6 +951,9 @@ class App:
         return 'break'  # 읽기전용
 
     def _on_wheel(self, e):
+        if e.state & 0x4:  # Ctrl+휠: 응답칸 투명도 10% 씩
+            self.set_output_opacity(self._output_opacity() + (0.1 if e.delta > 0 else -0.1))
+            return 'break'
         self.out_text_w.yview_scroll(int(-e.delta / 120), 'units')
         return 'break'
 
@@ -985,7 +1018,10 @@ class App:
             win.configure(bg=bg)
             box.configure(bg=bg)
             win.attributes('-topmost', False)
-            set_alpha(self._hwnd(win), 1.0, INPUT_KEY if win is self.in_win else None)
+            if win is self.in_win:
+                set_alpha(self.in_hwnd, 1.0, INPUT_KEY)
+            else:
+                set_alpha(self.out_hwnd, self._output_opacity())
         self.out_text_w.configure(state='disabled')
         self.calibrating = False
         self._update_input_look()
@@ -1028,12 +1064,16 @@ class App:
             1: self.cfg['hotkeyToggle'],
             2: self.cfg['hotkeyCalibrate'],
             3: self.cfg['hotkeyFocus'],
+            4: self.cfg['hotkeyOutput'],
         }
         threading.Thread(target=self._hotkey_loop, daemon=True).start()
 
     def _hotkey_loop(self):
         MOD = {'ctrl': 2, 'alt': 1, 'shift': 4, 'win': 8}
-        VK = {'A': 0x41, 'Z': 0x5A, 'F12': 0x7B}
+        VK = {'UP': 0x26, 'DOWN': 0x28, 'LEFT': 0x25, 'RIGHT': 0x27, 'SPACE': 0x20}
+        VK.update({chr(c): c for c in range(0x30, 0x3A)})          # 0-9
+        VK.update({chr(c): c for c in range(0x41, 0x5B)})          # A-Z
+        VK.update({'F%d' % i: 0x6F + i for i in range(1, 25)})    # F1-F24
         for hid, combo in self._hotkeys.items():
             mod = 0
             vk = 0
@@ -1062,6 +1102,8 @@ class App:
                     self.start_calibrate()
             elif hid == 3:
                 self.enter_input()
+            elif hid == 4:
+                self.toggle_output()
         except Exception as e:
             log('hotkey: %s' % e)
 
@@ -1079,7 +1121,7 @@ class App:
 
     def quit(self):
         try:
-            for hid in (1, 2, 3):
+            for hid in self._hotkeys:
                 user32.UnregisterHotKey(None, hid)
         except Exception:
             pass
