@@ -3,7 +3,7 @@
 MemoRelay (Python 버전)
 
 IPlus Chart 화면의 기존 칸(기본 탭 증상칸, 명세서메모) 위에 테두리 없는 창 두 개를 겹쳐 놓고
-입력칸에 쓴 질문을 claude -p 로 보내 응답을 응답칸에 표시한다.
+입력칸에 쓴 질문을 claude -p (또는 /gpt 로 전환하면 codex exec) 로 보내 응답을 응답칸에 표시한다.
 입력칸은 비어 있으면 완전히 투명하고 클릭이 통과해 아래 IPlus 증상칸을 그대로 쓸 수 있다.
 
 실행: pythonw memorelay.py (또는 Start-MemoRelay-py.cmd). 설정: memo-relay.json, 말투: system-prompt.txt
@@ -190,8 +190,12 @@ def find_by_title_prefix(prefix):
 # ---------- 설정 ----------
 DEFAULTS = {
     'targetTitle': 'IPlus Chart',
-    'model': 'sonnet',
+    'provider': 'claude',   # claude | gpt  (/claude, /gpt 로 전환)
+    'model': 'sonnet',      # Claude 모델
     'claudeExe': '',
+    'gptModel': '',         # ChatGPT(Codex) 모델. 비우면 Codex 기본값
+    'gptReasoning': 'low',  # minimal | low | medium | high. 비우면 Codex 기본값
+    'codexExe': '',
     'inputFont': 'NanumGothic',
     'inputFontSize': 9,
     'outputFont': 'NanumGothic',
@@ -245,10 +249,68 @@ def resolve_claude_exe(cfg, state):
     return None
 
 
+# ---------- codex exec (ChatGPT) ----------
+def resolve_codex_exe(cfg, state):
+    p = cfg.get('codexExe')
+    if p and os.path.exists(p):
+        return p
+    if state.get('codex') and os.path.exists(state['codex']):
+        return state['codex']
+    import glob
+    import shutil
+    cands = []
+    w = shutil.which('codex')
+    if w and w.lower().endswith('.exe'):   # winget 등 단독 설치
+        cands.append(w)
+    # npm 전역 설치는 codex.cmd(배치 파일)라 인자 전달이 불안정 -> 패키지 안의 codex.exe 를 직접 쓴다
+    roots = [os.path.join(os.environ.get('APPDATA', ''), 'npm')]
+    if w:
+        roots.insert(0, os.path.dirname(w))
+    for r in roots:
+        cands += glob.glob(os.path.join(r, 'node_modules', '@openai', 'codex*', 'vendor', '**', 'codex.exe'),
+                           recursive=True)
+    for c in cands:
+        if os.path.exists(c):
+            state['codex'] = c
+            return c
+    return None
+
+
+def codex_logged_in():
+    home = os.environ.get('CODEX_HOME') or os.path.join(os.path.expanduser('~'), '.codex')
+    return os.path.exists(os.path.join(home, 'auth.json'))
+
+
+def parse_codex(out):
+    # codex exec --json 의 JSONL 이벤트에서 세션 id, 마지막 답, 오류를 뽑는다
+    sid, text, err = None, None, None
+    for l in out.splitlines():
+        try:
+            ev = json.loads(l)
+        except Exception:
+            continue
+        t = ev.get('type')
+        item = ev.get('item') or {}
+        if t == 'thread.started':
+            sid = ev.get('thread_id')
+        elif t == 'item.completed' and item.get('type') == 'agent_message':
+            text = item.get('text')
+        elif t == 'turn.failed':
+            err = (ev.get('error') or {}).get('message') or err
+        elif t == 'error' and not err:
+            err = ev.get('message')
+    return sid, text, err
+
+
 def clean_env():
     # API 키나 다른 Claude 세션의 인증 변수를 물려받지 않도록 제거 -> 항상 CLI 로그인(구독)으로
     return {k: v for k, v in os.environ.items()
-            if not (k.upper().startswith('CLAUDE') or k.upper().startswith('ANTHROPIC'))}
+            if not (k.upper().startswith('CLAUDE') or k.upper().startswith('ANTHROPIC')
+                    or k.upper() in ('OPENAI_API_KEY', 'CODEX_API_KEY'))}
+
+
+IMAGE_EXT = ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp')
+PROVIDER_NAME = {'claude': 'Claude', 'gpt': 'ChatGPT'}
 
 
 MD_FENCE = re.compile(r'^\s*```')
@@ -316,7 +378,7 @@ class App:
         self.login_running = False
         self.login_result = None  # /login 이 끝나면 auth status 출력이 들어옴
         self.cancelled = False
-        self.pending = None       # (question, files, model)
+        self.pending = None       # (question, files, model, provider)
         self.out_text = ''
         self.exe = None
         self.state = {}
@@ -489,29 +551,23 @@ class App:
     def _q(self, v):
         return '"' + v.rstrip('\\') + '"'
 
-    def start_ask(self, text):
-        exe = resolve_claude_exe(self.cfg, self.state)
-        if not exe:
-            self.show_output('오류: claude.exe 를 찾지 못함')
-            return
-        files = list(self.files)
-        prompt = text
-        if files:
-            prompt += '\n\n첨부 파일 (Read 도구로 읽어서 참고):\n' + '\n'.join(files)
+    def model_label(self):
+        if self.cfg['provider'] == 'gpt':
+            return 'gpt:' + (self.cfg['gptModel'] or 'default')
+        return self.cfg['model']
 
-        argv = [exe, '-p', '--output-format', 'json', '--model', self.cfg['model'],
-                '--system-prompt-file', PROMPT_FILE, '--tools', 'Read', '--allowedTools', 'Read',
-                # 사용자 설정의 MCP 서버/플러그인/스킬 목록이 매번 수십만 토큰씩 실리는 것을 막음
-                '--strict-mcp-config', '--setting-sources', 'project', '--disable-slash-commands']
-        dirs = sorted(set(os.path.dirname(f) for f in files))
-        for d in dirs:
-            argv += ['--add-dir', d]
-        if self.session_id:
-            argv += ['--resume', self.session_id]
+    def start_ask(self, text):
+        files = list(self.files)
+        if self.cfg['provider'] == 'gpt':
+            argv, prompt = self._codex_argv(text, files)
+        else:
+            argv, prompt = self._claude_argv(text, files)
+        if not argv:
+            return
 
         env = clean_env()
 
-        self.pending = (text, files, self.cfg['model'])
+        self.pending = (text, files, self.model_label(), self.cfg['provider'])
         self.cancelled = False
         self.result_holder = {}
         self.files = []
@@ -537,6 +593,60 @@ class App:
         threading.Thread(target=worker, daemon=True).start()
         self.show_output('...')
 
+    def _claude_argv(self, text, files):
+        exe = resolve_claude_exe(self.cfg, self.state)
+        if not exe:
+            self.show_output('오류: claude.exe 를 찾지 못함')
+            return None, None
+        prompt = text
+        if files:
+            prompt += '\n\n첨부 파일 (Read 도구로 읽어서 참고):\n' + '\n'.join(files)
+
+        argv = [exe, '-p', '--output-format', 'json', '--model', self.cfg['model'],
+                '--system-prompt-file', PROMPT_FILE, '--tools', 'Read', '--allowedTools', 'Read',
+                # 사용자 설정의 MCP 서버/플러그인/스킬 목록이 매번 수십만 토큰씩 실리는 것을 막음
+                '--strict-mcp-config', '--setting-sources', 'project', '--disable-slash-commands']
+        dirs = sorted(set(os.path.dirname(f) for f in files))
+        for d in dirs:
+            argv += ['--add-dir', d]
+        if self.session_id:
+            argv += ['--resume', self.session_id]
+        return argv, prompt
+
+    def _codex_argv(self, text, files):
+        exe = resolve_codex_exe(self.cfg, self.state)
+        if not exe:
+            self.show_output('오류: codex.exe 를 찾지 못함\n설치: npm i -g @openai/codex')
+            return None, None
+        if not codex_logged_in():
+            self.show_output('ChatGPT 로그인 필요\n입력칸에 /login')
+            return None, None
+        prompt = text
+        if files:
+            prompt += '\n\n첨부 파일 (읽어서 참고):\n' + '\n'.join(files)
+        try:
+            with open(PROMPT_FILE, encoding='utf-8') as f:
+                sysprompt = f.read()
+        except Exception:
+            sysprompt = ''
+
+        # 사용자 config.toml(MCP 서버 등)은 읽지 않고, 읽기 전용 샌드박스로 실행
+        argv = [exe, 'exec', '--json', '--skip-git-repo-check', '--ignore-user-config',
+                '--color', 'never', '-s', 'read-only',
+                # JSON 문자열은 TOML 기본 문자열로도 유효 -> 줄바꿈/따옴표가 그대로 전달됨
+                '-c', 'developer_instructions=' + json.dumps(sysprompt, ensure_ascii=False)]
+        if self.cfg['gptModel']:
+            argv += ['-m', self.cfg['gptModel']]
+        if self.cfg['gptReasoning']:
+            argv += ['-c', 'model_reasoning_effort=' + json.dumps(self.cfg['gptReasoning'])]
+        for f in files:
+            if f.lower().endswith(IMAGE_EXT):
+                argv.append('--image=' + f)  # = 형식: 값 여러 개를 받는 옵션이 뒤 인자를 먹지 않게
+        if self.session_id:
+            argv += ['resume', self.session_id]
+        argv.append('-')  # 질문은 stdin 으로
+        return argv, prompt
+
     def complete_ask(self):
         r = self.result_holder
         self.result_holder = {}
@@ -544,6 +654,8 @@ class App:
             self.cancelled = False
             self.show_output('취소됨')
             return
+        if self.pending[3] == 'gpt':
+            return self._complete_codex(r)
         out, err = r.get('out', ''), r.get('err', '')
         line = None
         for l in out.splitlines():
@@ -572,17 +684,40 @@ class App:
             self.session_id = j['session_id']
         text = format_plain(str(j.get('result', '')), self.cfg['keepNumbers'])
         self.show_output(text)
-        q, files, model = self.pending
+        q, files, model, _ = self.pending
+        self.save_history(q, files, text, model)
+
+    def _complete_codex(self, r):
+        out, err = r.get('out', ''), r.get('err', '')
+        sid, text, emsg = parse_codex(out)
+        if not text:
+            log('codex error code=%s out=%s err=%s' % (r.get('code'), out, err))
+            msg = (emsg or err or out).strip()
+            if re.search(r'401|Unauthorized|Not logged in|login', msg):
+                msg += '\n\n입력칸에 /login 으로 로그인'
+            self.show_output('오류: ' + msg)
+            return
+        if sid:
+            self.session_id = sid
+        text = format_plain(text, self.cfg['keepNumbers'])
+        self.show_output(text)
+        q, files, model, _ = self.pending
         self.save_history(q, files, text, model)
 
     # ---------- CLI 로그인 ----------
     def start_login(self):
-        # claude auth login 을 새 콘솔 창에서 실행 (브라우저가 열리고, 필요하면 코드 붙여넣기)
+        # 현재 사용 중인 쪽(claude auth login / codex login)을 새 콘솔 창에서 실행
+        # (브라우저가 열리고, 필요하면 코드 붙여넣기)
         if self.login_running:
             return
-        exe = resolve_claude_exe(self.cfg, self.state)
+        if self.cfg['provider'] == 'gpt':
+            exe = resolve_codex_exe(self.cfg, self.state)
+            login, status = ['login'], ['login', 'status']
+        else:
+            exe = resolve_claude_exe(self.cfg, self.state)
+            login, status = ['auth', 'login'], ['auth', 'status']
         if not exe:
-            self.show_output('오류: claude.exe 를 찾지 못함')
+            self.show_output('오류: %s 를 찾지 못함' % ('codex.exe' if self.cfg['provider'] == 'gpt' else 'claude.exe'))
             return
         env = clean_env()
         self.login_running = True
@@ -590,9 +725,9 @@ class App:
 
         def worker():
             try:
-                subprocess.call([exe, 'auth', 'login'], cwd=WORK_DIR, env=env,
+                subprocess.call([exe] + login, cwd=WORK_DIR, env=env,
                                 creationflags=0x00000010)  # CREATE_NEW_CONSOLE
-                r = subprocess.run([exe, 'auth', 'status'], cwd=WORK_DIR, env=env,
+                r = subprocess.run([exe] + status, cwd=WORK_DIR, env=env,
                                    capture_output=True, creationflags=0x08000000, timeout=30)
                 out = (r.stdout + r.stderr).decode('utf-8', 'replace').strip()
             except Exception as e:
@@ -607,7 +742,7 @@ class App:
         self.login_result = None
         self.login_running = False
         log('login: %s' % out.replace('\n', ' '))
-        self.show_output('로그인 상태\n' + out)
+        self.show_output('%s 로그인 상태\n%s' % (PROVIDER_NAME[self.cfg['provider']], out))
 
     def save_history(self, q, files, a, model):
         if not self.cfg['saveHistory']:
@@ -694,7 +829,7 @@ class App:
     # ---------- 입력 처리 ----------
     def invoke_input(self):
         t = self.in_text.get('1.0', 'end-1c').strip()
-        m = re.match(r'^/(new|opus|sonnet|haiku|model|file|login|quit)(?:\s+(\S+))?$', t)
+        m = re.match(r'^/(new|claude|gpt|opus|sonnet|haiku|model|file|login|quit)(?:\s+(\S+))?$', t)
         if m:
             cmd, arg = m.group(1), m.group(2)
             self._clear_input()
@@ -702,15 +837,20 @@ class App:
                 self.session_id = None
                 self.hist_file = None
                 self.show_output('새 대화')
+            elif cmd in ('claude', 'gpt'):
+                self.set_provider(cmd)
+                self.show_output('%s\n모델: %s' % (PROVIDER_NAME[cmd], self.model_label()))
             elif cmd in ('opus', 'sonnet', 'haiku'):
+                self.set_provider('claude')
                 self.cfg['model'] = cmd
                 save_config(self.cfg)
-                self.show_output('모델: ' + self.cfg['model'])
+                self.show_output('Claude\n모델: ' + self.cfg['model'])
             elif cmd == 'model':
                 if arg:
-                    self.cfg['model'] = arg
+                    key = 'gptModel' if self.cfg['provider'] == 'gpt' else 'model'
+                    self.cfg[key] = '' if arg == 'default' else arg
                     save_config(self.cfg)
-                self.show_output('모델: ' + self.cfg['model'])
+                self.show_output('%s\n모델: %s' % (PROVIDER_NAME[self.cfg['provider']], self.model_label()))
             elif cmd == 'file':
                 self.select_files()
             elif cmd == 'login':
@@ -726,6 +866,14 @@ class App:
             t = '첨부 파일 내용 요약'
         self._clear_input()
         self.start_ask(t)
+
+    def set_provider(self, provider):
+        # 대화 기록은 서로 이어지지 않으므로 전환하면 새 대화
+        if self.cfg['provider'] != provider:
+            self.cfg['provider'] = provider
+            save_config(self.cfg)
+            self.session_id = None
+            self.hist_file = None
 
     def _clear_input(self):
         self.in_text.delete('1.0', 'end')

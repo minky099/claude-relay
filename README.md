@@ -1,6 +1,6 @@
 # MemoRelay
 
-IPlus Chart 위에 겹쳐 뜨는 위장 입력/응답 칸. 질문을 `claude -p`(구독 로그인)로 보내고 답을 메모처럼 보여줌.
+IPlus Chart 위에 겹쳐 뜨는 위장 입력/응답 칸. 질문을 `claude -p`(Claude 구독 로그인) 또는 `codex exec`(ChatGPT 구독 로그인)로 보내고 답을 메모처럼 보여줌.
 
 - 입력칸: 기본 탭 증상칸 자리. 비어 있으면 완전히 투명하고 클릭이 통과해서 아래 IPlus 증상칸을 그대로 쓸 수 있음.
   Ctrl+Alt+A 로 커서를 넣어도 배경은 투명하고, 글자를 치면 친 글자 칸만 흰 바탕으로 덮여 아래 글자를 가림
@@ -12,7 +12,19 @@ IPlus Chart 위에 겹쳐 뜨는 위장 입력/응답 칸. 질문을 `claude -p`
 - 종료는 입력칸에 `/quit`.
 
 ## 처음 한 번: CLI 로그인
-입력칸에 `/login` → 콘솔 창이 뜨고 브라우저에서 Claude 구독 계정으로 로그인. 끝나면 응답칸에 로그인 상태 표시.
+입력칸에 `/login` → 콘솔 창이 뜨고 브라우저에서 구독 계정으로 로그인. 끝나면 응답칸에 로그인 상태 표시.
+지금 쓰는 쪽(Claude / ChatGPT)에 로그인하니, ChatGPT 는 `/gpt` 로 전환한 뒤 `/login`.
+
+## ChatGPT 쓰기
+OpenAI Codex CLI 를 ChatGPT 구독 계정으로 로그인해서 쓴다 (API 키 불필요). 한 번 설치:
+
+    npm i -g @openai/codex
+
+(Node.js 필요. `winget install OpenAI.Codex` 등으로 codex.exe 를 PATH 에 두어도 됨. 못 찾으면 `memo-relay.json` 의 `codexExe` 에 경로 지정)
+`/gpt` 로 전환 → `/login` → 질문. `/claude` 로 돌아옴. 전환하면 새 대화로 시작.
+- `gptModel`: 모델 (비우면 Codex 기본값). `/gpt` 상태에서 `/model <id>` 로도 변경, `/model default` 로 기본값
+- `gptReasoning`: 추론 강도 `minimal`/`low`/`medium`/`high` (기본 `low`, 빠른 답 위주)
+- 답변 말투는 Claude 와 같은 `system-prompt.txt` 를 씀. 첨부 이미지는 그대로 붙이고, 다른 파일은 경로를 주면 읽기 전용으로 읽음
 
 ## 조작
 | 키 / 명령 | 동작 |
@@ -25,8 +37,9 @@ IPlus Chart 위에 겹쳐 뜨는 위장 입력/응답 칸. 질문을 `claude -p`
 | 파일 첨부 | Ctrl+V(복사한 파일/캡처 이미지) 또는 Ctrl+O / `/file` (드래그앤드롭은 없음) |
 | 마우스 휠 | 응답칸 스크롤 |
 | `/new` | 새 대화 |
-| `/login` | Claude CLI 로그인 (구독 계정) |
-| `/opus` `/sonnet` `/haiku`, `/model <id>` | 모델 변경 (`/model` 만 치면 현재 모델) |
+| `/claude`, `/gpt` | Claude / ChatGPT 전환 (새 대화) |
+| `/login` | 지금 쓰는 쪽 CLI 로그인 (구독 계정) |
+| `/opus` `/sonnet` `/haiku`, `/model <id>` | 모델 변경 (`/opus` 등은 Claude 로 전환, `/model` 은 지금 쓰는 쪽, `/model` 만 치면 현재 모델) |
 | Ctrl+Alt+Z | 두 칸 즉시 숨기기/보이기 |
 | Ctrl+Alt+F12 | 보정 모드 시작/저장 (아래) |
 

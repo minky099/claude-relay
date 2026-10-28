@@ -1,7 +1,11 @@
 {
   "targetTitle": "IPlus Chart",
+  "provider": "claude",
   "model": "opus",
   "claudeExe": "",
+  "gptModel": "",
+  "gptReasoning": "low",
+  "codexExe": "",
   "inputFont": "NanumGothic",
   "inputFontSize": 9,
   "outputFont": "NanumGothic",
